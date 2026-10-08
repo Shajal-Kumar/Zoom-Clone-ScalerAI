@@ -1,6 +1,7 @@
 """Pydantic V2 schemas for request validation and response serialisation."""
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -26,6 +27,8 @@ __all__ = [
     "MeetingExistsResponse",
     "ParticipantCreate",
     "MeetingParticipantResponse",
+    "VerifyPasscodeRequest",
+    "VerifyPasscodeResponse",
 ]
 
 
@@ -155,3 +158,19 @@ class MeetingParticipantResponse(ORMModel):
     is_host: bool
     joined_at: datetime
     left_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Passcode verification (Module 2.1)
+# --------------------------------------------------------------------------- #
+class VerifyPasscodeRequest(BaseModel):
+    """POST /api/meetings/{id}/verify-passcode"""
+
+    passcode: str = Field(default="", max_length=64)
+
+
+class VerifyPasscodeResponse(BaseModel):
+    """Always HTTP 200 (except 429); ``reason`` explains a ``valid: false``."""
+
+    valid: bool
+    reason: Literal["incorrect", "not_found", "ended"] | None = None

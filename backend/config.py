@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     chat_history_size: int = 100
     chat_rate_limit_count: int = 10
     chat_rate_limit_window_seconds: float = 5.0
+    reaction_rate_limit_count: int = 5
+    reaction_rate_limit_window_seconds: float = 3.0
+
+    # ---- Passcode brute-force guard (REST verify + WebSocket join) -------- #
+    passcode_attempt_limit: int = 5
+    passcode_attempt_window_seconds: float = 60.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

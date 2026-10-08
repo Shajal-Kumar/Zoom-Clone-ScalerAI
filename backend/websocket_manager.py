@@ -20,6 +20,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from fastapi import WebSocket
@@ -40,10 +41,16 @@ class CloseCode:
     MEETING_ENDED = 4001
     REMOVED_BY_HOST = 4003
     NOT_FOUND = 4004
+    PASSCODE = 4005
     ROOM_FULL = 4008
     REPLACED = 4009
     IDLE_TIMEOUT = 4010
     BAD_REQUEST = 4400
+
+
+def iso_z(moment: datetime | None) -> str | None:
+    """ISO-8601 with a ``Z`` suffix, or ``None``."""
+    return moment.isoformat().replace("+00:00", "Z") if moment else None
 
 
 class JoinRejected(Exception):
@@ -71,7 +78,7 @@ def make_envelope(
         "from": sender,
         "to": to,
         "payload": payload or {},
-        "ts": utcnow().isoformat().replace("+00:00", "Z"),
+        "ts": iso_z(utcnow()),
     }
 
 
@@ -83,13 +90,27 @@ class Peer:
     user_id: str | None = None
     is_host: bool = False
     participant_id: str | None = None
+    audio: bool = False
+    video: bool = False
+    hand_raised_at: datetime | None = None
+    screen_stream_id: str | None = None
     chat_times: deque = field(default_factory=deque)
+    reaction_times: deque = field(default_factory=deque)
+
+    @property
+    def is_sharing(self) -> bool:
+        return self.screen_stream_id is not None
 
     def public(self) -> dict[str, Any]:
         return {
             "client_id": self.client_id,
             "display_name": self.display_name,
             "is_host": self.is_host,
+            "audio": self.audio,
+            "video": self.video,
+            "hand_raised_at": iso_z(self.hand_raised_at),
+            "is_sharing": self.is_sharing,
+            "screen_stream_id": self.screen_stream_id,
         }
 
 
@@ -101,6 +122,7 @@ class Room:
         default_factory=lambda: deque(maxlen=settings.chat_history_size)
     )
     banned: set[str] = field(default_factory=set)
+    sharer_id: str | None = None  # client_id of the single active screen sharer
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     grace_task: asyncio.Task | None = None
     ended: bool = False
@@ -140,10 +162,32 @@ class ConnectionManager:
 
                 # Claim the slot before awaiting anything, so the grace timer
                 # cannot end the meeting underneath a join that is in flight.
+                had_grace = room.grace_task is not None
                 room.peers[peer.client_id] = peer
                 self._cancel_grace(room)
 
+                # Persist first. If this fails, the older duplicate connection
+                # (if any) is restored instead of leaving the user with none.
+                try:
+                    participant_id = await run_in_threadpool(
+                        lifecycle.register_join,
+                        room.meeting_id,
+                        peer.display_name,
+                        peer.is_host,
+                    )
+                except Exception:
+                    logger.exception("register_join failed for meeting %s", meeting_id)
+                    self._rollback_join(room, peer, replaced, had_grace)
+                    raise JoinRejected(CloseCode.INTERNAL_ERROR, "Could not join meeting")
+
+                if participant_id is None:
+                    self._rollback_join(room, peer, replaced, had_grace)
+                    raise JoinRejected(CloseCode.NOT_FOUND, "Meeting not found or has ended")
+                peer.participant_id = participant_id
+
                 if replaced is not None:
+                    # Same client_id: the old tab's share (if any) is gone.
+                    await self.stop_share(room, replaced, "left", notify_sharer=False)
                     await self.close_quietly(
                         replaced.websocket, CloseCode.REPLACED, "Connected from another tab"
                     )
@@ -154,30 +198,21 @@ class ConnectionManager:
                         ),
                         exclude={peer.client_id},
                     )
-
-                try:
-                    participant_id = await run_in_threadpool(
-                        lifecycle.register_join,
-                        room.meeting_id,
-                        peer.display_name,
-                        peer.is_host,
-                    )
-                except Exception:
-                    logger.exception("register_join failed for meeting %s", meeting_id)
-                    self._remove_peer(room, peer)
-                    raise JoinRejected(CloseCode.INTERNAL_ERROR, "Could not join meeting")
-
-                if participant_id is None:
-                    self._remove_peer(room, peer)
-                    raise JoinRejected(CloseCode.NOT_FOUND, "Meeting not found or has ended")
-                peer.participant_id = participant_id
         except JoinRejected:
             self._discard_if_idle(room)
             raise
         return room
 
     async def disconnect(self, room: Room, peer: Peer) -> None:
-        """Clean up after a socket closed for any reason."""
+        """Clean up after a socket closed for any reason.
+
+        Shielded: if the handler task is cancelled (server shutdown, test
+        harness) the cleanup still finishes, so shares, rooms and DB rows
+        are never left half-updated.
+        """
+        await asyncio.shield(self._disconnect(room, peer))
+
+    async def _disconnect(self, room: Room, peer: Peer) -> None:
         is_current = room.peers.get(peer.client_id) is peer
         if is_current:
             del room.peers[peer.client_id]
@@ -192,6 +227,7 @@ class ConnectionManager:
         if not is_current or room.ended:
             return
 
+        await self.stop_share(room, peer, "left")
         await self.broadcast(
             room,
             make_envelope("user_left", sender=peer.client_id, payload=peer.public()),
@@ -255,11 +291,15 @@ class ConnectionManager:
             await self.close_quietly(peer.websocket, CloseCode.GOING_AWAY, "Send failed")
             return False
 
-    async def send_error(self, peer: Peer, code: str, message: str) -> None:
+    async def send_error(
+        self, peer: Peer, code: str, message: str, extra: dict[str, Any] | None = None
+    ) -> None:
         await self.send(
             peer,
             make_envelope(
-                "error", to=peer.client_id, payload={"code": code, "message": message}
+                "error",
+                to=peer.client_id,
+                payload={"code": code, "message": message, **(extra or {})},
             ),
         )
 
@@ -303,18 +343,53 @@ class ConnectionManager:
             },
         )
 
+    async def stop_share(
+        self, room: Room, sharer: Peer, reason: str, *, notify_sharer: bool = True
+    ) -> bool:
+        """Clear the room's screen share if ``sharer`` owns it and tell the room.
+
+        ``reason``: stopped | replaced | left | stopped_by_host.
+        """
+        if room.sharer_id != sharer.client_id:
+            return False
+        room.sharer_id = None
+        sharer.screen_stream_id = None
+        await self.broadcast(
+            room,
+            make_envelope(
+                "screen_share",
+                sender=sharer.client_id,
+                payload={"active": False, "reason": reason},
+            ),
+            exclude=frozenset() if notify_sharer else frozenset({sharer.client_id}),
+        )
+        return True
+
     @staticmethod
-    def allow_chat(peer: Peer) -> bool:
-        """Sliding-window rate limit per peer."""
+    def _within_limit(times: deque, count: int, window: float) -> bool:
         now = time.monotonic()
-        window = settings.chat_rate_limit_window_seconds
-        times = peer.chat_times
         while times and now - times[0] > window:
             times.popleft()
-        if len(times) >= settings.chat_rate_limit_count:
+        if len(times) >= count:
             return False
         times.append(now)
         return True
+
+    @classmethod
+    def allow_chat(cls, peer: Peer) -> bool:
+        return cls._within_limit(
+            peer.chat_times,
+            settings.chat_rate_limit_count,
+            settings.chat_rate_limit_window_seconds,
+        )
+
+    @classmethod
+    def allow_reaction(cls, peer: Peer) -> bool:
+        return cls._within_limit(
+            peer.reaction_times,
+            settings.reaction_rate_limit_count,
+            settings.reaction_rate_limit_window_seconds,
+        )
 
     # ------------------------------------------------------------------ #
     # Empty-room grace period
@@ -322,6 +397,18 @@ class ConnectionManager:
     def _remove_peer(self, room: Room, peer: Peer) -> None:
         if room.peers.get(peer.client_id) is peer:
             del room.peers[peer.client_id]
+
+    def _rollback_join(
+        self, room: Room, peer: Peer, replaced: Peer | None, had_grace: bool
+    ) -> None:
+        """Undo a failed join: restore the replaced connection or free the slot."""
+        if room.peers.get(peer.client_id) is peer:
+            if replaced is not None:
+                room.peers[peer.client_id] = replaced
+            else:
+                del room.peers[peer.client_id]
+        if not room.peers and had_grace and not room.ended:
+            self._start_grace(room)  # the cancelled countdown must not be lost
 
     def _discard_if_idle(self, room: Room) -> None:
         """Forget a room nobody ever managed to enter."""

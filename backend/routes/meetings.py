@@ -7,7 +7,7 @@ before ``/{meeting_id}`` so the path parameter cannot swallow them.
 from collections.abc import Callable
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
@@ -23,7 +23,10 @@ from schemas import (
     MeetingPublicResponse,
     MeetingResponse,
     MeetingScheduleCreate,
+    VerifyPasscodeRequest,
+    VerifyPasscodeResponse,
 )
+from passcode import passcode_limiter, passcodes_match
 from utils import (
     generate_passcode,
     generate_unique_meeting_id,
@@ -187,3 +190,41 @@ def lookup_meeting(meeting_id: str, db: Session = Depends(get_db)) -> MeetingExi
     return MeetingExistsResponse(
         exists=True, meeting=MeetingPublicResponse.model_validate(meeting)
     )
+
+
+@router.post(
+    "/{meeting_id}/verify-passcode",
+    response_model=VerifyPasscodeResponse,
+    summary="Check a passcode before joining (rate limited per IP + meeting)",
+)
+def verify_passcode(
+    meeting_id: str,
+    body: VerifyPasscodeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> VerifyPasscodeResponse:
+    """Always 200 with ``{valid, reason}``; 429 once the failure limit is hit.
+
+    Comparison is case-insensitive and constant-time. A meeting without a
+    passcode is always valid. Failures are shared with WebSocket joins.
+    """
+    normalized = normalize_meeting_id(meeting_id)
+    key = (request.client.host if request.client else "unknown", normalized or "invalid")
+    wait = passcode_limiter.retry_after(key)
+    if wait:
+        raise HTTPException(
+            status_code=http_status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many incorrect passcodes. Try again shortly.",
+            headers={"Retry-After": str(wait)},
+        )
+
+    meeting = db.get(Meeting, normalized) if normalized else None
+    if meeting is None:
+        return VerifyPasscodeResponse(valid=False, reason="not_found")
+    if meeting.status == MeetingStatus.ENDED:
+        return VerifyPasscodeResponse(valid=False, reason="ended")
+    if not meeting.passcode or passcodes_match(body.passcode, meeting.passcode):
+        return VerifyPasscodeResponse(valid=True)
+
+    passcode_limiter.record_failure(key)
+    return VerifyPasscodeResponse(valid=False, reason="incorrect")

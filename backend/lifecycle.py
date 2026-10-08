@@ -21,6 +21,7 @@ class MeetingSnapshot:
     title: str
     host_id: str
     status: MeetingStatus
+    passcode: str | None
 
 
 def get_meeting_snapshot(meeting_id: str) -> MeetingSnapshot | None:
@@ -33,6 +34,7 @@ def get_meeting_snapshot(meeting_id: str) -> MeetingSnapshot | None:
             title=meeting.title,
             host_id=meeting.host_id,
             status=meeting.status,
+            passcode=meeting.passcode,
         )
 
 

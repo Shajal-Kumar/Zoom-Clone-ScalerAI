@@ -1,6 +1,8 @@
 """WebRTC signalling over WebSocket: ``WS /ws/meeting/{meeting_id}/{client_id}``.
 
 Connect with ``?name=<display name>`` and, for the host, ``?user_id=<host user id>``.
+Guests of a passcode-protected meeting must add ``&passcode=<code>`` (the host
+bypasses it); optional ``&audio=1|0&video=1|0`` seed the initial media state.
 A client is the host when ``user_id`` equals ``meeting.host_id``. (Mock-auth
 only: the query parameter is trusted, so this is not real authentication.)
 
@@ -9,7 +11,11 @@ Client -> server messages are JSON ``{"type", "to"?, "payload"}``:
 * ``offer`` / ``answer`` / ``candidate``  targeted at ``to`` (a client_id)
 * ``chat_message``                        ``payload.text``, broadcast to the room
 * ``host_action``                         ``payload.action`` in mute | mute_all | kick
-                                          | end_meeting (+ ``payload.target_client_id``)
+                                          | stop_share | end_meeting (+ ``payload.target_client_id``)
+* ``media_state``                         ``{audio, video}`` booleans, relayed to the others
+* ``screen_share``                        ``{active, stream_id, force?}``; one sharer per room
+* ``raise_hand``                          ``{raised, target_client_id?}`` (only hosts may target others, to lower)
+* ``reaction``                            ``{emoji}`` from a fixed set, broadcast to everyone
 * ``ping``                                answered with ``pong`` (use as heartbeat)
 
 Server -> client messages always have the shape
@@ -18,10 +24,11 @@ Server -> client messages always have the shape
 * ``room_state``   sent once on join: self, existing peers, chat history. The
                    newcomer should send an ``offer`` to every listed peer.
 * ``user_joined`` / ``user_left``   broadcast to the others
-* ``error``        ``payload.code`` / ``payload.message``; the socket stays open
+* ``error``        ``payload.code`` / ``payload.message``; the socket stays open.
+                   ``share_in_progress`` also carries ``sharer_id`` / ``sharer_name``.
 
 Close codes: 4001 meeting ended, 4003 removed by host, 4004 not found/ended,
-4008 room full, 4009 replaced by a newer connection, 4010 idle timeout,
+4005 passcode missing/incorrect, 4008 room full, 4009 replaced by a newer connection, 4010 idle timeout,
 4400 bad request.
 """
 
@@ -37,13 +44,15 @@ from starlette.concurrency import run_in_threadpool
 import lifecycle
 from config import settings
 from models import MeetingStatus
-from utils import normalize_meeting_id
+from passcode import passcode_limiter, passcodes_match
+from utils import normalize_meeting_id, utcnow
 from websocket_manager import (
     CloseCode,
     ConnectionManager,
     JoinRejected,
     Peer,
     Room,
+    iso_z,
     make_envelope,
 )
 
@@ -52,7 +61,12 @@ router = APIRouter()
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _RELAY_TYPES = {"offer", "answer", "candidate"}
 _SERVER_ONLY_TYPES = {"user_joined", "user_left", "room_state", "error", "pong"}
-_HOST_ACTIONS = {"mute", "mute_all", "kick", "end_meeting"}
+_HOST_ACTIONS = {"mute", "mute_all", "kick", "stop_share", "end_meeting"}
+_REACTIONS = {"👍", "👏", "❤️", "😂", "😮", "🎉"}
+
+
+def _flag(value: str) -> bool:
+    return value.strip().lower() in {"1", "true"}
 
 
 @router.websocket("/ws/meeting/{meeting_id}/{client_id}")
@@ -62,6 +76,9 @@ async def meeting_socket(
     client_id: str,
     name: str = Query(default="Guest", max_length=120),
     user_id: str | None = Query(default=None, max_length=36),
+    passcode: str | None = Query(default=None, max_length=64),
+    audio: str = Query(default="0", max_length=5),
+    video: str = Query(default="0", max_length=5),
 ) -> None:
     manager: ConnectionManager = websocket.app.state.connection_manager
 
@@ -83,12 +100,30 @@ async def meeting_socket(
         )
         return
 
+    is_host = user_id is not None and user_id == snapshot.host_id
+    if snapshot.passcode and not is_host:
+        key = (websocket.client.host if websocket.client else "unknown", normalized)
+        if passcode_limiter.retry_after(key):
+            await manager.close_quietly(
+                websocket, CloseCode.PASSCODE, "Too many passcode attempts"
+            )
+            return
+        if not passcodes_match(passcode, snapshot.passcode):
+            if passcode is not None:  # a missing code is not a guess
+                passcode_limiter.record_failure(key)
+            await manager.close_quietly(
+                websocket, CloseCode.PASSCODE, "Passcode missing or incorrect"
+            )
+            return
+
     peer = Peer(
         client_id=client_id,
         display_name=name.strip() or "Guest",
         websocket=websocket,
         user_id=user_id,
-        is_host=user_id is not None and user_id == snapshot.host_id,
+        is_host=is_host,
+        audio=_flag(audio),
+        video=_flag(video),
     )
 
     try:
@@ -161,6 +196,14 @@ async def _handle_frame(manager: ConnectionManager, room: Room, peer: Peer, raw:
         await _relay(manager, room, peer, msg_type, data, payload)
     elif msg_type == "chat_message":
         await _chat(manager, room, peer, payload)
+    elif msg_type == "media_state":
+        await _media_state(manager, room, peer, payload)
+    elif msg_type == "screen_share":
+        await _screen_share(manager, room, peer, payload)
+    elif msg_type == "raise_hand":
+        await _raise_hand(manager, room, peer, payload)
+    elif msg_type == "reaction":
+        await _reaction(manager, room, peer, payload)
     elif msg_type == "host_action":
         await _host_action(manager, room, peer, data, payload)
     elif msg_type in _SERVER_ONLY_TYPES:
@@ -254,6 +297,14 @@ async def _host_action(
         )
         return
 
+    if action == "stop_share":
+        sharer = room.peers.get(room.sharer_id) if room.sharer_id else None
+        if sharer is None:
+            await manager.send_error(peer, "no_active_share", "Nobody is sharing their screen.")
+            return
+        await manager.stop_share(room, sharer, "stopped_by_host")
+        return
+
     # mute / kick need a target.
     target_id = payload.get("target_client_id") or data.get("to")
     target = room.peers.get(target_id) if isinstance(target_id, str) else None
@@ -278,3 +329,135 @@ async def _host_action(
         await manager.close_quietly(
             target.websocket, CloseCode.REMOVED_BY_HOST, "Removed by host"
         )
+
+
+async def _media_state(
+    manager: ConnectionManager, room: Room, peer: Peer, payload: dict[str, Any]
+) -> None:
+    audio, video = payload.get("audio"), payload.get("video")
+    if not isinstance(audio, bool) or not isinstance(video, bool):
+        await manager.send_error(
+            peer, "invalid_media_state", "'audio' and 'video' must be booleans."
+        )
+        return
+    peer.audio, peer.video = audio, video
+    await manager.broadcast(
+        room,
+        make_envelope(
+            "media_state", sender=peer.client_id, payload={"audio": audio, "video": video}
+        ),
+        exclude={peer.client_id},
+    )
+
+
+async def _screen_share(
+    manager: ConnectionManager, room: Room, peer: Peer, payload: dict[str, Any]
+) -> None:
+    active = payload.get("active")
+    if not isinstance(active, bool):
+        await manager.send_error(peer, "invalid_screen_share", "'active' must be a boolean.")
+        return
+
+    if not active:
+        # Only the current sharer can stop; anything else is a harmless no-op.
+        await manager.stop_share(room, peer, "stopped", notify_sharer=False)
+        return
+
+    stream_id = payload.get("stream_id")
+    if not isinstance(stream_id, str) or not 1 <= len(stream_id) <= 128:
+        await manager.send_error(
+            peer, "invalid_screen_share", "'stream_id' must be a non-empty string."
+        )
+        return
+
+    current = room.peers.get(room.sharer_id) if room.sharer_id else None
+    if current is not None and current is not peer:
+        if payload.get("force") is not True:
+            await manager.send_error(
+                peer,
+                "share_in_progress",
+                "Someone else is already sharing their screen.",
+                extra={"sharer_id": current.client_id, "sharer_name": current.display_name},
+            )
+            return
+        # Replace: tell the old sharer only; everyone else learns from the new start.
+        room.sharer_id = None
+        current.screen_stream_id = None
+        await manager.send(
+            current,
+            make_envelope(
+                "screen_share",
+                sender=current.client_id,
+                to=current.client_id,
+                payload={"active": False, "reason": "replaced"},
+            ),
+        )
+
+    peer.screen_stream_id = stream_id
+    room.sharer_id = peer.client_id
+    await manager.broadcast(
+        room,
+        make_envelope(
+            "screen_share",
+            sender=peer.client_id,
+            payload={"active": True, "stream_id": stream_id},
+        ),
+        exclude={peer.client_id},
+    )
+
+
+async def _raise_hand(
+    manager: ConnectionManager, room: Room, peer: Peer, payload: dict[str, Any]
+) -> None:
+    raised = payload.get("raised")
+    if not isinstance(raised, bool):
+        await manager.send_error(peer, "invalid_raise_hand", "'raised' must be a boolean.")
+        return
+
+    target_id = payload.get("target_client_id")
+    if target_id is None or target_id == peer.client_id:
+        target = peer
+    else:
+        if not peer.is_host or raised:
+            await manager.send_error(
+                peer, "forbidden", "Only a host can lower another participant's hand."
+            )
+            return
+        target = room.peers.get(target_id) if isinstance(target_id, str) else None
+        if target is None:
+            await manager.send_error(peer, "invalid_target", "Participant is not in this meeting.")
+            return
+
+    if raised:
+        if target.hand_raised_at is None:  # keep the original time so ordering is stable
+            target.hand_raised_at = utcnow()
+    else:
+        target.hand_raised_at = None
+    await manager.broadcast(
+        room,
+        make_envelope(
+            "raise_hand",
+            sender=target.client_id,
+            payload={"raised": raised, "hand_raised_at": iso_z(target.hand_raised_at)},
+        ),
+    )
+
+
+async def _reaction(
+    manager: ConnectionManager, room: Room, peer: Peer, payload: dict[str, Any]
+) -> None:
+    emoji = payload.get("emoji")
+    if not isinstance(emoji, str) or emoji not in _REACTIONS:
+        await manager.send_error(
+            peer, "invalid_emoji", f"emoji must be one of: {' '.join(sorted(_REACTIONS))}"
+        )
+        return
+    if not manager.allow_reaction(peer):
+        await manager.send_error(peer, "rate_limited", "You are reacting too quickly.")
+        return
+    await manager.broadcast(
+        room,
+        make_envelope(
+            "reaction", sender=peer.client_id, payload={"emoji": emoji, "id": str(uuid.uuid4())}
+        ),
+    )
