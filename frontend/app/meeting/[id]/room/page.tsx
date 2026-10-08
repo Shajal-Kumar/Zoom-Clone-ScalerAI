@@ -1,8 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Loader2, Mic, MicOff, MonitorUp, PhoneOff, Video, VideoOff, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
+import { ChatDrawer } from "@/components/ChatDrawer";
+import { ControlBar, type DrawerKind } from "@/components/ControlBar";
+import { MeetingHeader } from "@/components/MeetingHeader";
+import { ParticipantsDrawer } from "@/components/ParticipantsDrawer";
+import { ReactionOverlay } from "@/components/ReactionOverlay";
 import { Filmstrip, filmTile } from "@/components/room/Filmstrip";
 import { MediaBanner } from "@/components/room/MediaBanner";
 import { ReplaceShareDialog } from "@/components/room/ReplaceShareDialog";
@@ -14,16 +19,12 @@ import { pickStreams } from "@/lib/streams";
 import { useMeeting } from "@/providers/MeetingProvider";
 import { useSettings } from "@/providers/SettingsProvider";
 
-const ctrlBtn =
-  "flex h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium text-white transition-colors";
-
 function RoomView() {
   const router = useRouter();
   const search = useSearchParams();
   const { settings } = useSettings();
   const {
     meetingId,
-    lookup,
     phase,
     displayName,
     participants,
@@ -35,8 +36,9 @@ function RoomView() {
     shareCta,
     dismissShareCta,
     toast,
-    leave,
-    maxParticipants,
+    chat,
+    selfId,
+    joinedAt,
   } = useMeeting();
 
   // /room opened with no session (refresh, direct link) bounces back to the lobby, query kept.
@@ -50,9 +52,25 @@ function RoomView() {
     }
   }, [phase, meetingId, router, search]);
 
+  // Side drawer + unread chat badge. Opening chat marks everything seen; it stays seen while open.
+  const [drawer, setDrawer] = useState<DrawerKind>(null);
+  const [seenChat, setSeenChat] = useState(0);
+  useEffect(() => {
+    if (drawer === "chat") setSeenChat(chat.length);
+  }, [drawer, chat.length]);
+  const toggleDrawer = useCallback((kind: Exclude<DrawerKind, null>) => {
+    setDrawer((cur) => (cur === kind ? null : kind));
+  }, []);
+  // History delivered with room_state is not "new": start counting from what was there at join.
+  const chatLenRef = useRef(0);
+  chatLenRef.current = chat.length;
+  useEffect(() => {
+    if (joinedAt) setSeenChat(chatLenRef.current);
+  }, [joinedAt]);
+  const unreadChat = chat.slice(seenChat).filter((m) => m.sender_id !== selfId).length;
+
   if (phase !== "joining" && phase !== "joined") return null;
 
-  const title = lookup.status === "ready" ? lookup.meeting.title : "Meeting";
   const sharer = participants.find((p) => p.is_sharing) ?? null;
   const localSharing = screen.local !== null;
   const spotlight = localSharing || sharer !== null;
@@ -112,12 +130,7 @@ function RoomView() {
         </div>
       )}
 
-      <header className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
-        <span className="truncate font-medium">{title}</span>
-        <span className="shrink-0 text-[var(--muted)]">
-          {tileCount} / {maxParticipants}
-        </span>
-      </header>
+      <MeetingHeader />
 
       {shareCta && !localSharing && (
         <div className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-lg bg-[var(--card)] px-4 py-2 text-sm">
@@ -139,64 +152,49 @@ function RoomView() {
         </div>
       )}
 
-      <main className="flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2 sm:px-4">
-        {spotlight ? (
-          <>
+      <div className="relative flex min-h-0 flex-1">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-2 px-2 pb-2 sm:px-4">
+          {spotlight ? (
+            <>
+              <div className="min-h-0 flex-1">
+                <Spotlight
+                  stream={localSharing ? null : remoteScreen}
+                  sharerName={sharer?.display_name ?? "Someone"}
+                  local={localSharing}
+                  onStop={screen.stop}
+                />
+              </div>
+              <Filmstrip>
+                {selfTile(filmTile)}
+                {peerTiles(filmTile)}
+              </Filmstrip>
+            </>
+          ) : (
             <div className="min-h-0 flex-1">
-              <Spotlight
-                stream={localSharing ? null : remoteScreen}
-                sharerName={sharer?.display_name ?? "Someone"}
-                local={localSharing}
-                onStop={screen.stop}
-              />
+              <VideoGrid count={tileCount}>
+                {selfTile()}
+                {peerTiles()}
+              </VideoGrid>
             </div>
-            <Filmstrip>
-              {selfTile(filmTile)}
-              {peerTiles(filmTile)}
-            </Filmstrip>
-          </>
-        ) : (
-          <div className="min-h-0 flex-1">
-            <VideoGrid count={tileCount}>
-              {selfTile()}
-              {peerTiles()}
-            </VideoGrid>
-          </div>
-        )}
-      </main>
+          )}
+          <ReactionOverlay />
+        </main>
 
-      {/* Bare controls: Module 5 replaces this with the full control bar and drawers. */}
-      <footer className="flex items-center justify-center gap-2 bg-[#13151B] px-3 py-3">
-        <button
-          onClick={media.toggleAudio}
-          className={`${ctrlBtn} ${media.audioOn ? "bg-white/10 hover:bg-white/20" : "bg-red-600 hover:bg-red-500"}`}
-          aria-label={media.audioOn ? "Mute microphone" : "Unmute microphone"}
-          aria-pressed={!media.audioOn}
-        >
-          {media.audioOn ? <Mic size={18} /> : <MicOff size={18} />}
-        </button>
-        <button
-          onClick={media.toggleVideo}
-          className={`${ctrlBtn} ${media.videoOn ? "bg-white/10 hover:bg-white/20" : "bg-red-600 hover:bg-red-500"}`}
-          aria-label={media.videoOn ? "Turn camera off" : "Turn camera on"}
-          aria-pressed={!media.videoOn}
-        >
-          {media.videoOn ? <Video size={18} /> : <VideoOff size={18} />}
-        </button>
-        <button
-          onClick={localSharing ? screen.stop : screen.start}
-          className={`${ctrlBtn} ${localSharing ? "bg-[var(--blue)] hover:bg-[var(--blue-hover)]" : "bg-white/10 hover:bg-white/20"}`}
-          aria-label={localSharing ? "Stop sharing" : "Share screen"}
-          aria-pressed={localSharing}
-        >
-          <MonitorUp size={18} />
-          <span className="hidden sm:inline">{localSharing ? "Stop share" : "Share"}</span>
-        </button>
-        <button onClick={leave} className={`${ctrlBtn} bg-[var(--danger)] hover:opacity-90`}>
-          <PhoneOff size={18} />
-          <span>Leave</span>
-        </button>
-      </footer>
+        {drawer && (
+          <aside
+            aria-label={drawer === "chat" ? "Chat" : "Participants"}
+            className="absolute inset-y-0 right-0 z-30 w-full border-l border-[var(--border)] bg-[#13151B] sm:static sm:w-80 sm:shrink-0"
+          >
+            {drawer === "chat" ? (
+              <ChatDrawer onClose={() => setDrawer(null)} />
+            ) : (
+              <ParticipantsDrawer onClose={() => setDrawer(null)} />
+            )}
+          </aside>
+        )}
+      </div>
+
+      <ControlBar drawer={drawer} onToggleDrawer={toggleDrawer} unreadChat={unreadChat} />
 
       {toast && (
         <div

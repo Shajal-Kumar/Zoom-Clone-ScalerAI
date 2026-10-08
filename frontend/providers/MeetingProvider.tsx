@@ -9,10 +9,12 @@ import { endHref, lobbyHref } from "@/lib/routes";
 import { clearStoredPasscode, getClientId } from "@/lib/storage";
 import type {
   ChatMessage,
+  HostActionName,
   Envelope,
   ErrorPayload,
   PeerInfo,
   PublicMeeting,
+  ReactionEvent,
   RoomStatePayload,
 } from "@/lib/types";
 import { useLocalMedia, type LocalMedia } from "@/hooks/useLocalMedia";
@@ -61,6 +63,11 @@ export interface MeetingContextValue {
   participants: PeerInfo[];
   maxParticipants: number;
   chat: ChatMessage[];
+  /** Reactions currently floating over the room. */
+  reactions: ReactionEvent[];
+  dismissReaction: (id: string) => void;
+  /** When this tab's room_state arrived (ms epoch); basis for the header timer. */
+  joinedAt: number | null;
 
   media: LocalMedia;
   /** All streams received from each remote peer, keyed by client_id (see lib/streams.ts). */
@@ -80,6 +87,13 @@ export interface MeetingContextValue {
   shareCta: boolean;
   dismissShareCta: () => void;
   toast: string | null;
+  notify: (message: string) => void;
+
+  sendChat: (text: string) => boolean;
+  setHand: (raised: boolean) => void;
+  sendReaction: (emoji: string) => void;
+  /** Host-only on the server; non-hosts get an error toast. */
+  hostAction: (action: HostActionName, targetId?: string) => void;
 
   join: (config: JoinConfig) => void;
   /** User pressed Leave: tear everything down and go to /end?reason=left. */
@@ -232,6 +246,9 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
   const [shareCta, setShareCta] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const lastSentMedia = useRef<{ audio: boolean; video: boolean } | null>(null);
+  const [reactions, setReactions] = useState<ReactionEvent[]>([]);
+  const [joinedAt, setJoinedAt] = useState<number | null>(null);
+  const reactionSeq = useRef(0);
 
   useEffect(() => {
     if (!toast) return;
@@ -273,6 +290,8 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     media.stop();
     setToast(null);
     setShareCta(false);
+    setReactions([]);
+    setJoinedAt(null);
     lastSentMedia.current = null;
     dispatch({ type: "RESET", phase: "left" });
   }, [screen, webrtc, media]);
@@ -287,6 +306,8 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     webrtc.resetAll();
     setToast(null);
     setShareCta(false);
+    setReactions([]);
+    setJoinedAt(null);
     lastSentMedia.current = null;
     dispatch({ type: "RESET", phase: "lobby" });
   }, [screen, webrtc]);
@@ -300,6 +321,7 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
         // A fresh room_state (first join or after a reconnect) means: rebuild every connection.
         webrtc.resetAll();
         dispatch({ type: "ROOM_STATE", payload });
+        setJoinedAt((prev) => prev ?? Date.now()); // survives reconnects so the timer doesn't restart
         webrtc.connectTo(payload.peers.map((p) => p.client_id)); // newcomer offers (5.2)
         lastSentMedia.current = { audio: payload.self.audio, video: payload.self.video };
         screen.reannounce();
@@ -358,23 +380,37 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
         break;
       }
       case "host_action": {
-        // Module 5 owns the full set; mute is cheap and keeps the room usable now.
         const action = env.payload.action;
         if (action === "mute" || action === "mute_all") {
           media.setAudioEnabled(false);
           setToast("The host muted you. You can unmute yourself.");
         }
-        break; // kick / end_meeting arrive as close codes 4003 / 4001
+        break; // kick / end_meeting arrive as close codes 4003 / 4001; stop_share arrives as screen_share
       }
       case "error": {
         const err = env.payload as unknown as ErrorPayload;
         if (err.code === "share_in_progress") screen.handleShareInProgress(err);
-        else if (err.code === "rate_limited") setToast(err.message);
-        else console.warn("[ws] server error", err.code, err.message);
+        else if (err.message) setToast(err.message);
+        else console.warn("[ws] server error", err.code);
+        break;
+      }
+      case "reaction": {
+        const emoji = typeof env.payload.emoji === "string" ? env.payload.emoji : null;
+        if (!emoji) break;
+        const sender = from === clientId ? null : state.peers[from ?? ""];
+        reactionSeq.current += 1;
+        const event: ReactionEvent = {
+          id: `r${reactionSeq.current}`,
+          emoji,
+          sender_id: from,
+          sender_name: from === clientId ? "You" : (sender?.display_name ?? "Someone"),
+          x: 8 + Math.random() * 84,
+        };
+        setReactions((prev) => [...prev.slice(-24), event]);
         break;
       }
       default:
-        break; // reaction etc.: Module 5
+        break;
     }
   };
 
@@ -433,6 +469,28 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "PHASE", phase: "joining" });
   }, []);
 
+  const notify = useCallback((message: string) => setToast(message), []);
+  const dismissReaction = useCallback(
+    (id: string) => setReactions((prev) => prev.filter((r) => r.id !== id)),
+    [],
+  );
+  const sendChat = useCallback(
+    (text: string) => {
+      const trimmed = text.trim().slice(0, 2000);
+      if (!trimmed) return false;
+      return send("chat_message", { text: trimmed });
+    },
+    [send],
+  );
+  const setHand = useCallback((raised: boolean) => void send("raise_hand", { raised }), [send]);
+  const sendReaction = useCallback((emoji: string) => void send("reaction", { emoji }), [send]);
+  const hostAction = useCallback(
+    (action: HostActionName, targetId?: string) => {
+      void send("host_action", targetId ? { action, target_client_id: targetId } : { action });
+    },
+    [send],
+  );
+
   const value: MeetingContextValue = {
     routeId,
     meetingId,
@@ -447,6 +505,9 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     participants: state.order.map((id) => state.peers[id]).filter((p): p is PeerInfo => Boolean(p)),
     maxParticipants: state.maxParticipants,
     chat: state.chat,
+    reactions,
+    dismissReaction,
+    joinedAt,
 
     media,
     remoteStreams: webrtc.remoteStreams,
@@ -465,6 +526,12 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     shareCta,
     dismissShareCta: () => setShareCta(false),
     toast,
+    notify,
+
+    sendChat,
+    setHand,
+    sendReaction,
+    hostAction,
 
     join,
     leave: () => finish("left"),

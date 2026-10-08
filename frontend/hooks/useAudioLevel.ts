@@ -4,9 +4,22 @@ import { useEffect, useState } from "react";
 
 type AudioContextCtor = typeof AudioContext;
 
+let sharedCtx: AudioContext | null = null;
+
+/** One AudioContext for the whole page: browsers cap concurrent contexts, and the room has one per tile. */
+function getSharedContext(): AudioContext | null {
+  if (sharedCtx && sharedCtx.state !== "closed") return sharedCtx;
+  const Ctor: AudioContextCtor | undefined =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext;
+  if (!Ctor) return null;
+  sharedCtx = new Ctor();
+  return sharedCtx;
+}
+
 /**
  * Live input level (0..1) of the audio tracks in `stream`, via an AnalyserNode.
- * Pass `active=false` (muted) to get 0 and release the AudioContext.
+ * Pass `active=false` (muted) to get 0 and release the analyser.
  * `version` re-runs the effect when tracks are swapped inside the same MediaStream.
  */
 export function useAudioLevel(stream: MediaStream | null, version: number, active: boolean): number {
@@ -17,12 +30,8 @@ export function useAudioLevel(stream: MediaStream | null, version: number, activ
     const tracks = stream.getAudioTracks().filter((t) => t.readyState === "live");
     if (tracks.length === 0) return;
 
-    const Ctor: AudioContextCtor | undefined =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext;
-    if (!Ctor) return;
-
-    const ctx = new Ctor();
+    const ctx = getSharedContext();
+    if (!ctx) return;
     void ctx.resume().catch(() => {});
     const source = ctx.createMediaStreamSource(new MediaStream(tracks));
     const analyser = ctx.createAnalyser();
@@ -50,7 +59,7 @@ export function useAudioLevel(stream: MediaStream | null, version: number, activ
     return () => {
       cancelAnimationFrame(raf);
       source.disconnect();
-      void ctx.close().catch(() => {});
+      analyser.disconnect();
       setLevel(0);
     };
   }, [stream, version, active]);

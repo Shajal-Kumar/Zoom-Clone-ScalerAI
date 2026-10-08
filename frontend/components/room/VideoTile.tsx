@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MicOff, VideoOff } from "lucide-react";
+import { useAudioLevel } from "@/hooks/useAudioLevel";
 import { initials } from "@/lib/streams";
+
+const SPEAK_THRESHOLD = 0.12;
+const SPEAK_HOLD_MS = 450;
 
 interface VideoTileProps {
   stream: MediaStream | null;
@@ -48,9 +52,26 @@ export function VideoTile({
 
   const showVideo = videoOn && stream !== null;
 
+  // Active speaker: level above a threshold, held briefly so the ring doesn't flicker between words.
+  // Remote tracks can be added to a stream after it first appears, so the audio track count joins the key.
+  const audioTracks = stream ? stream.getAudioTracks().length : 0;
+  const level = useAudioLevel(stream, version * 100 + audioTracks, audioOn && audioTracks > 0);
+  const [speaking, setSpeaking] = useState(false);
+  useEffect(() => {
+    if (level > SPEAK_THRESHOLD) {
+      setSpeaking(true);
+      return;
+    }
+    const t = setTimeout(() => setSpeaking(false), SPEAK_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [level]);
+  const active = speaking && audioOn;
+
   return (
     <div
-      className={`relative min-h-0 min-w-0 overflow-hidden rounded-xl bg-[var(--card)] ${className}`}
+      className={`relative min-h-0 min-w-0 overflow-hidden rounded-xl bg-[var(--card)] transition-shadow ${
+        active ? "ring-2 ring-emerald-500" : ""
+      } ${className}`}
       aria-label={`${name}${audioOn ? "" : ", muted"}${videoOn ? "" : ", camera off"}`}
     >
       <video

@@ -110,3 +110,15 @@ export interface ErrorPayload {
 }
 
 export type HostActionName = "mute" | "mute_all" | "kick" | "stop_share" | "end_meeting";
+
+/** A reaction currently floating over the room (client-side only, expires after a few seconds). */
+export interface ReactionEvent {
+  id: string;
+  emoji: string;
+  sender_id: string | null;
+  sender_name: string;
+  /** 0..100, horizontal start position in percent, randomised per event. */
+  x: number;
+}
+
+export const REACTION_EMOJIS = ["👏", "👍", "❤️", "🎉"] as const;
