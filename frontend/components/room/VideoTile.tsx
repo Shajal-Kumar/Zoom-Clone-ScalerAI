@@ -86,7 +86,7 @@ export function VideoTile({
       {!showVideo && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--blue)] text-xl font-semibold text-white sm:h-20 sm:w-20 sm:text-2xl">
-            {initials(name)}
+            {initials(name.replace(/\s*\(You\)$/, ""))}
           </div>
         </div>
       )}

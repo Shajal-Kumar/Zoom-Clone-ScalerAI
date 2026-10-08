@@ -482,11 +482,26 @@ export function MeetingProvider({ children }: { children: React.ReactNode }) {
     },
     [send],
   );
-  const setHand = useCallback((raised: boolean) => void send("raise_hand", { raised }), [send]);
-  const sendReaction = useCallback((emoji: string) => void send("reaction", { emoji }), [send]);
+  const NOT_CONNECTED = "Not connected to the meeting server. Reconnecting…";
+  const setHand = useCallback(
+    (raised: boolean) => {
+      if (!send("raise_hand", { raised })) setToast(NOT_CONNECTED);
+    },
+    [send],
+  );
+  // Reactions are rendered from the server's broadcast (so everyone sees the same thing), which
+  // means nothing appears while the socket is down: say so instead of failing silently.
+  const sendReaction = useCallback(
+    (emoji: string) => {
+      if (!send("reaction", { emoji })) setToast(NOT_CONNECTED);
+    },
+    [send],
+  );
   const hostAction = useCallback(
     (action: HostActionName, targetId?: string) => {
-      void send("host_action", targetId ? { action, target_client_id: targetId } : { action });
+      if (!send("host_action", targetId ? { action, target_client_id: targetId } : { action })) {
+        setToast(NOT_CONNECTED);
+      }
     },
     [send],
   );
