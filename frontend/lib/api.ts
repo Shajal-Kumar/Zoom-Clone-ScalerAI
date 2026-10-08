@@ -1,5 +1,11 @@
 import { API_URL, DEFAULT_USER } from "./config";
-import type { Meeting, MeetingExistsResponse, ScheduleRequest, UpdateMeetingRequest } from "./types";
+import type {
+  Meeting,
+  MeetingExistsResponse,
+  ScheduleRequest,
+  UpdateMeetingRequest,
+  VerifyPasscodeResponse,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -61,6 +67,13 @@ export const api = {
 
   lookup: (id: string) =>
     request<MeetingExistsResponse>(`/api/meetings/${encodeURIComponent(id)}`),
+
+  /** Always resolves with {valid, reason}; rejects with ApiError(429, detail) when rate limited. */
+  verifyPasscode: (id: string, passcode: string) =>
+    request<VerifyPasscodeResponse>(`/api/meetings/${encodeURIComponent(id)}/verify-passcode`, {
+      method: "POST",
+      body: JSON.stringify({ passcode }),
+    }),
 
   list: (key: string) => request<Meeting[]>(key),
 };

@@ -7,4 +7,8 @@ export const STORAGE = {
   settings: "zoomclone.settings.v1",
   /** Display name typed in the Join modal; the lobby reads it once. */
   pendingName: "zoomclone.pendingName",
+  /** sessionStorage: stable WebSocket client_id for this tab (reconnects reuse it). */
+  clientId: "zoomclone.clientId",
+  /** sessionStorage: `${passcodePrefix}${meetingId}` holds a passcode that passed verification. */
+  passcodePrefix: "zoomclone.passcode.",
 } as const;

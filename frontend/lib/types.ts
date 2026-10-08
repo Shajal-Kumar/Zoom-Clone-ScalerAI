@@ -47,6 +47,12 @@ export interface UpdateMeetingRequest {
   scheduled_start?: string; // ISO-8601 (toISOString())
 }
 
+/** POST /api/meetings/{id}/verify-passcode (always 200; 429 is thrown as ApiError). */
+export interface VerifyPasscodeResponse {
+  valid: boolean;
+  reason: null | "incorrect" | "not_found" | "ended";
+}
+
 export interface Settings {
   displayName: string;
   muteOnJoin: boolean;
@@ -54,3 +60,53 @@ export interface Settings {
   mirrorVideo: boolean;
   theme: "light" | "dark";
 }
+
+/* ------------------------------------------------------------------ */
+/* WebSocket protocol (mirrors backend/routes/ws.py)                    */
+/* ------------------------------------------------------------------ */
+
+/** Peer public shape: room_state.self, room_state.peers[], user_joined, user_left. */
+export interface PeerInfo {
+  client_id: string;
+  display_name: string;
+  is_host: boolean;
+  audio: boolean;
+  video: boolean;
+  hand_raised_at: string | null;
+  is_sharing: boolean;
+  screen_stream_id: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  text: string;
+  sender_id: string;
+  sender_name: string;
+  is_host: boolean;
+  ts: string;
+}
+
+/** Every server -> client message. `from` is stamped by the server. */
+export interface Envelope<P = Record<string, unknown>> {
+  type: string;
+  from: string | null;
+  to: string | null;
+  payload: P;
+  ts: string;
+}
+
+export interface RoomStatePayload {
+  self: PeerInfo;
+  peers: PeerInfo[];
+  chat_history: ChatMessage[];
+  max_participants: number;
+}
+
+export interface ErrorPayload {
+  code: string;
+  message: string;
+  sharer_id?: string;
+  sharer_name?: string;
+}
+
+export type HostActionName = "mute" | "mute_all" | "kick" | "stop_share" | "end_meeting";
