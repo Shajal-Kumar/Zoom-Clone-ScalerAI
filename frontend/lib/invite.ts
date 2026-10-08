@@ -12,7 +12,7 @@ export const formatWhen = (iso: string | null, opts?: Intl.DateTimeFormatOptions
 /** Plain-text invitation. The link never carries the passcode. */
 export function buildInvitation(m: Meeting): string {
   const lines = [
-    `${m.host?.name ?? DEFAULT_USER.name} is inviting you to a Zoom Clone meeting.`,
+    `${m.host?.name ?? DEFAULT_USER.name} is inviting you to a Zoom meeting.`,
     "",
     `Topic: ${m.title}`,
   ];

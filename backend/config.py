@@ -17,7 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 class Settings(BaseSettings):
-    app_name: str = "Zoom Clone API"
+    app_name: str = "Zoom API"
     app_version: str = "0.1.0"
 
     # Absolute path so the DB location does not depend on the working directory.

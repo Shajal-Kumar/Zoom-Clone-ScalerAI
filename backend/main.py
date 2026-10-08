@@ -22,7 +22,7 @@ from seed import seed_database
 from websocket_manager import ConnectionManager
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s: %(message)s")
-logger = logging.getLogger("zoom_clone")
+logger = logging.getLogger("zoom")
 
 
 @asynccontextmanager

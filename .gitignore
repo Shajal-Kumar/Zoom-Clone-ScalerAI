@@ -53,3 +53,9 @@ share/python-wheels/
 # Operating System Files
 .DS_Store
 Thumbs.db
+node_modules/
+.next/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/

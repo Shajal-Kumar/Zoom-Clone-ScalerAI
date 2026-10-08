@@ -49,7 +49,7 @@ export function Navbar({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <header className="z-40 flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--card)] px-4">
       <div className="flex flex-1 items-center gap-3">
-        <span className="text-2xl font-extrabold lowercase tracking-tight text-[var(--blue)]" aria-label="Zoom Clone">
+        <span className="text-2xl font-extrabold lowercase tracking-tight text-[var(--blue)]" aria-label="Zoom">
           zoom
         </span>
         <span className="hidden h-5 w-px bg-[var(--border)] sm:block" aria-hidden />

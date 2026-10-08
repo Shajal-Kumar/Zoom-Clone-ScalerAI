@@ -56,7 +56,7 @@ export default function MeetingsPage() {
   }
 
   const invitationText = isPmi
-    ? `${DEFAULT_USER.name} is inviting you to a Zoom Clone meeting.\n\nTopic: ${PMI_TITLE}\nMeeting ID: ${PMI_ID}`
+    ? `${DEFAULT_USER.name} is inviting you to a Zoom meeting.\n\nTopic: ${PMI_TITLE}\nMeeting ID: ${PMI_ID}`
     : buildInvitation(meeting!);
 
   async function copyInvitation() {

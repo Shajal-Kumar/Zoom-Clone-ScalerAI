@@ -30,7 +30,7 @@ import lifecycle
 from config import settings
 from utils import utcnow
 
-logger = logging.getLogger("zoom_clone.ws")
+logger = logging.getLogger("zoom.ws")
 
 
 class CloseCode:
