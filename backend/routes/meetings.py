@@ -23,6 +23,7 @@ from schemas import (
     MeetingPublicResponse,
     MeetingResponse,
     MeetingScheduleCreate,
+    MeetingUpdate,
     VerifyPasscodeRequest,
     VerifyPasscodeResponse,
 )
@@ -190,6 +191,40 @@ def lookup_meeting(meeting_id: str, db: Session = Depends(get_db)) -> MeetingExi
     return MeetingExistsResponse(
         exists=True, meeting=MeetingPublicResponse.model_validate(meeting)
     )
+
+
+@router.patch(
+    "/{meeting_id}",
+    response_model=MeetingEnvelope,
+    summary="Edit a meeting's title, passcode or start time",
+)
+def update_meeting(
+    meeting_id: str,
+    body: MeetingUpdate,
+    db: Session = Depends(get_db),
+) -> MeetingEnvelope:
+    """Partial update: only the fields present in the body are changed.
+
+    Ended meetings are read-only (409). Returns the full meeting, same shape as
+    the create endpoints, so the client can swap it into its cache.
+    """
+    normalized = normalize_meeting_id(meeting_id)
+    meeting = db.get(Meeting, normalized) if normalized else None
+    if meeting is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="Meeting not found"
+        )
+    if meeting.status == MeetingStatus.ENDED:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="Ended meetings can't be edited",
+        )
+
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(meeting, field, value)
+    db.commit()
+    db.refresh(meeting)
+    return MeetingEnvelope(meeting=MeetingResponse.model_validate(meeting))
 
 
 @router.post(

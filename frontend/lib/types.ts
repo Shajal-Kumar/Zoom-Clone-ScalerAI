@@ -40,6 +40,13 @@ export interface ScheduleRequest {
   host_id?: string;
 }
 
+/** Body of PATCH /api/meetings/{id}. Only the fields that changed are sent. */
+export interface UpdateMeetingRequest {
+  title?: string;
+  passcode?: string;
+  scheduled_start?: string; // ISO-8601 (toISOString())
+}
+
 export interface Settings {
   displayName: string;
   muteOnJoin: boolean;

@@ -11,20 +11,15 @@ export function ClockWidget() {
     return () => clearInterval(id);
   }, []);
 
-  const parts = now?.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).match(/^(\d+:\d+):(\d+)\s(AM|PM)$/);
-  const date = now?.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const time = now?.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const date = now?.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
-    <section
-      aria-label="Current time"
-      className="flex h-full min-h-48 flex-col justify-center rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6"
-    >
-      <div className="flex items-baseline gap-2 tabular-nums" role="timer" aria-live="off">
-        <span className="text-5xl font-semibold tracking-tight sm:text-6xl">{parts ? parts[1] : "--:--"}</span>
-        <span className="text-xl font-medium text-[var(--muted)]">{parts ? parts[3] : ""}</span>
-        <span className="w-8 text-base text-[var(--muted)]">{parts ? `:${parts[2]}` : ""}</span>
+    <section aria-label="Current time" className="text-center">
+      <div className="text-5xl font-semibold tracking-tight tabular-nums" role="timer" aria-live="off">
+        {time ?? "--:--"}
       </div>
-      <p className="mt-2 text-sm text-[var(--muted)]">{date ?? "\u00a0"}</p>
+      <p className="mt-1 text-base text-[var(--muted)]">{date ?? " "}</p>
     </section>
   );
 }

@@ -1,5 +1,5 @@
 import { API_URL, DEFAULT_USER } from "./config";
-import type { Meeting, MeetingExistsResponse, ScheduleRequest } from "./types";
+import type { Meeting, MeetingExistsResponse, ScheduleRequest, UpdateMeetingRequest } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -51,6 +51,12 @@ export const api = {
     request<{ meeting: Meeting }>("/api/meetings/schedule", {
       method: "POST",
       body: JSON.stringify({ host_id: DEFAULT_USER.id, ...body }),
+    }).then((r) => r.meeting),
+
+  updateMeeting: (id: string, data: UpdateMeetingRequest) =>
+    request<{ meeting: Meeting }>(`/api/meetings/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
     }).then((r) => r.meeting),
 
   lookup: (id: string) =>

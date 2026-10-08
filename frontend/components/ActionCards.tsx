@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Calendar, Loader2, MonitorUp, Plus, Video, type LucideIcon } from "lucide-react";
+import { Calendar, ChevronDown, CircleDot, FileText, Loader2, MonitorUp, Pencil, Plus, Video, type LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface Props {
@@ -12,12 +12,34 @@ interface Props {
   onToast: (message: string) => void;
 }
 
+const circle =
+  "grid h-14 w-14 place-items-center rounded-2xl text-white transition-transform group-hover:scale-105 group-disabled:opacity-70";
+const labelCls = "text-sm text-[var(--muted)] group-hover:text-[var(--text)]";
+
 export function ActionCards({ onJoin, onSchedule, onShare, onToast }: Props) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dayOfMonth, setDayOfMonth] = useState<number | null>(null); // set after mount (no hydration mismatch)
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setDayOfMonth(new Date().getDate()), []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => !menuRef.current?.contains(e.target as Node) && setMenuOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [menuOpen]);
 
   async function newMeeting() {
     if (creating) return;
+    setMenuOpen(false);
     setCreating(true);
     try {
       const meeting = await api.createInstant();
@@ -28,31 +50,85 @@ export function ActionCards({ onJoin, onSchedule, onShare, onToast }: Props) {
     }
   }
 
-  const cards: { key: string; label: string; hint: string; icon: LucideIcon; color: string; onClick: () => void; busy?: boolean }[] = [
-    { key: "new", label: "New meeting", hint: "Start an instant meeting", icon: Video, color: "var(--orange)", onClick: newMeeting, busy: creating },
-    { key: "join", label: "Join", hint: "Enter a meeting ID", icon: Plus, color: "var(--blue)", onClick: onJoin },
-    { key: "schedule", label: "Schedule", hint: "Plan a meeting for later", icon: Calendar, color: "var(--blue)", onClick: onSchedule },
-    { key: "share", label: "Share screen", hint: "Join, then present", icon: MonitorUp, color: "var(--blue)", onClick: onShare },
+  const pills: { label: string; icon: LucideIcon; tint: string }[] = [
+    { label: "Recordings", icon: CircleDot, tint: "bg-red-500/10 text-red-500" },
+    { label: "Summaries", icon: FileText, tint: "bg-violet-500/10 text-violet-500" },
+    { label: "My Notes", icon: Pencil, tint: "bg-indigo-500/10 text-indigo-500" },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      {cards.map(({ key, label, hint, icon: Icon, color, onClick, busy }) => (
-        <button
-          key={key}
-          onClick={onClick}
-          disabled={busy}
-          className="group flex min-h-36 flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-left transition-colors hover:border-[var(--blue-hover)] disabled:opacity-70"
-        >
-          <span className="grid h-12 w-12 place-items-center rounded-xl text-white" style={{ background: color }}>
-            {busy ? <Loader2 size={24} className="animate-spin" /> : <Icon size={24} />}
+    <div className="space-y-5">
+      {/* Primary actions */}
+      <div className="flex items-start justify-center gap-8 sm:gap-12">
+        <div ref={menuRef} className="relative flex w-28 flex-col items-center gap-2">
+          <button type="button" onClick={newMeeting} disabled={creating} aria-label="New meeting" className="group">
+            <span className={circle} style={{ background: "var(--orange)" }}>
+              {creating ? <Loader2 size={26} className="animate-spin" /> : <Video size={26} />}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            className="group flex items-center gap-0.5"
+          >
+            <span className={labelCls}>{creating ? "Starting…" : "New meeting"}</span>
+            <ChevronDown size={14} className="text-[var(--muted)]" />
+          </button>
+          {menuOpen && (
+            <div role="menu" className="absolute left-1/2 top-full z-20 mt-1 w-60 -translate-x-1/2 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1 shadow-lg">
+              <button role="menuitem" onClick={newMeeting} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--hover)]">
+                <Video size={14} /> Start an instant meeting
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onShare();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--hover)]"
+              >
+                <MonitorUp size={14} /> Share screen (join, then present)
+              </button>
+            </div>
+          )}
+        </div>
+
+        <button type="button" onClick={onJoin} className="group flex w-28 flex-col items-center gap-2">
+          <span className={circle} style={{ background: "var(--blue)" }}>
+            <Plus size={28} />
           </span>
-          <span>
-            <span className="block text-base font-semibold">{busy ? "Starting…" : label}</span>
-            <span className="block text-sm text-[var(--muted)]">{hint}</span>
-          </span>
+          <span className={labelCls}>Join</span>
         </button>
-      ))}
+
+        <button type="button" onClick={onSchedule} className="group flex w-28 flex-col items-center gap-2">
+          <span className={circle} style={{ background: "var(--blue)" }}>
+            <span className="relative grid place-items-center">
+              <Calendar size={28} aria-hidden />
+              <span className="absolute inset-x-0 bottom-[5px] text-center text-[10px] font-bold leading-none">{dayOfMonth ?? ""}</span>
+            </span>
+          </span>
+          <span className={labelCls}>Schedule</span>
+        </button>
+      </div>
+
+      {/* Secondary pills (placeholders) */}
+      <div className="grid grid-cols-3 gap-3">
+        {pills.map(({ label, icon: Icon, tint }) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => onToast(`${label} isn't available yet.`)}
+            className="flex h-14 items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] px-3 text-left text-sm font-semibold transition-colors hover:border-[var(--blue-hover)]"
+          >
+            <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${tint}`}>
+              <Icon size={16} />
+            </span>
+            <span className="truncate">{label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

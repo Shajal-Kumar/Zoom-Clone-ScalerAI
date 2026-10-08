@@ -20,6 +20,7 @@ __all__ = [
     "UserResponse",
     "InstantMeetingCreate",
     "MeetingScheduleCreate",
+    "MeetingUpdate",
     "MeetingResponse",
     "MeetingEnvelope",
     "HostPublic",
@@ -80,6 +81,32 @@ class MeetingScheduleCreate(BaseModel):
     @field_validator("scheduled_start")
     @classmethod
     def _must_be_in_future(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        if value <= utcnow():
+            raise ValueError("scheduled_start must be in the future")
+        return value
+
+
+class MeetingUpdate(BaseModel):
+    """PATCH /api/meetings/{id}
+
+    Every field is optional and only the ones sent are changed. An explicit
+    ``null`` is treated as "not sent". Same rules as ``MeetingScheduleCreate``.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    passcode: str | None = Field(default=None, min_length=4, max_length=16, pattern=r"^[A-Za-z0-9]+$")
+    scheduled_start: datetime | None = None
+
+    @field_validator("scheduled_start")
+    @classmethod
+    def _must_be_in_future(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return value
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         value = value.astimezone(timezone.utc)
